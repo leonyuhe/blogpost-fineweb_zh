@@ -1,0 +1,809 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <script src="distill.bundle.js" type="module" fetchpriority="high" blocking></script>
+    <script src="main.bundle.js" type="module" fetchpriority="low" defer></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta charset="utf8">
+    <base target="_blank">
+    <title>🍷 FineWeb：为大规模训练提炼最优质的网页文本</title>
+    <link rel="icon" type="image/svg+xml" href="assets/images/favicon.svg">
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+<d-front-matter>
+    <script id='distill-front-matter' type="text/json">{
+    "title": "🍷 FineWeb：为大规模训练提炼最优质的网页文本",
+    "description": "本文讨论如何大规模处理与评测数据质量、🍷 FineWeb 的完整配方（列出并解释我们的全部设计选择），以及创建 📚 FineWeb-Edu 子集的过程。",
+    "published": "2024 年 5 月 28 日",
+    "affiliation": {"name": "HuggingFace"},
+    "authors": [
+      {
+        "author":"Guilherme Penedo",
+        "authorURL":"https://huggingface.co/guipenedo"
+      },
+      {
+        "author":"Hynek Kydlíček",
+        "authorURL":"https://huggingface.co/hynky"
+      },
+      {
+        "author":"Loubna Ben Allal",
+        "authorURL":"https://huggingface.co/loubnabnl"
+      },
+      {
+        "author":"Anton Lozhkov",
+        "authorURL":"https://huggingface.co/anton-l"
+      },
+      {
+        "author":"Colin Raffel",
+        "authorURL":"https://huggingface.co/craffel"
+      },
+      {
+        "author":"Leandro Werra",
+        "authorURL":"https://huggingface.co/lvwerra"
+      },
+      {
+        "author":"Thomas Wolf",
+        "authorURL":"https://huggingface.co/thomwolf"
+      }
+    ],
+    "katex": {
+      "delimiters": [
+        {"left": "$$", "right": "$$", "display": false}
+      ]
+    }
+  }
+    </script>
+</d-front-matter>
+<d-title>
+    <h1 class="l-page" style="text-align: center;">🍷 FineWeb：<br>为大规模训练提炼最优质的网页文本</h1>
+    <div id="title-plot" class="main-plot-container l-screen">
+        <figure>
+            <img src="assets/images/banner.png" alt="FineWeb">
+        </figure>
+        <div id="clusters-plot">
+            <img src="assets/images/clusters.png" alt="Clusters">
+        </div>
+    </div>
+</d-title>
+<d-byline></d-byline>
+<d-article>
+    <d-contents>
+    </d-contents>
+
+    <p>The performance of a large language model (LLM) depends heavily on the quality and size of its pretraining dataset.
+        However, the pretraining datasets for state-of-the-art open LLMs like Llama 3<d-cite bibtex-key="llama3modelcard"></d-cite> and Mixtral<d-cite bibtex-key="jiang2024mixtral"></d-cite> are not publicly available and very little is known about how they were created.</p>
+        <aside>Reading time: 45 min. For the best reading experience, we recommend not using a mobile phone.</aside>
+
+        <p>Recently, we released <a href="https://huggingface.co/datasets/HuggingFaceFW/fineweb"><strong>🍷 FineWeb</strong></a>, a new, large-scale
+        (<strong>15-trillion tokens, 44TB disk space</strong>) dataset for LLM pretraining. FineWeb is derived from 96 <a href="https://commoncrawl.org/">CommonCrawl</a> snapshots and produces <strong>better-performing LLMs than other open pretraining datasets</strong>. To bring more clarity in machine learning and advance the open understanding of how to train good quality large language models, we carefully documented and ablated all of the design choices used in FineWeb, including in-depth investigations of deduplication and filtering strategies. The present long form report is a deep dive in how to create a large and high-quality web-scale dataset for LLM pretraining. The dataset itself, 🍷 FineWeb, is available <a href="https://huggingface.co/datasets/HuggingFaceFW/fineweb">here</a>.
+
+        <aside>We are extremely thankful to the whole <a href="https://distill.pub/">distill.pub</a> team (Christopher Olah, Shan Carter, Ludwig Schubert in particular) for creating the template on which we based this blog post. Thanks also for inspiring us with exquisitely crafted articles and blog posts.</aside>
+
+        <p>In this report we also introduce <a href="https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu"><strong>📚 FineWeb-Edu</strong></a>, a subset of FineWeb constructed using scalable automated high-quality annotations for educational value, and which outperforms all openly accessible web-datasets on a number of educational benchmarks such as MMLU, ARC, and OpenBookQA.
+        <a href="https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu">📚 FineWeb-Edu</a> is available in two sizes/filtering-level: <strong>1.3 trillion (very high educational content) and 5.4 trillion (high educational content) tokens</strong> (all tokens are measured with GPT2 tokenizer <d-cite bibtex-key="radford2019language"></d-cite>). You can
+        download it <a href="https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu">here</a>.</p>
+    <p>Both datasets are released under the permissive <a href="https://opendatacommons.org/licenses/by/1-0/">ODC-By 1.0 license</a></p>
+
+    <p><strong>TLDR:</strong> This blog covers a discussion on processing and evaluating data quality at scale, the 🍷 FineWeb
+        recipe (listing and explaining all of our design choices), and the process followed to create its 📚 FineWeb-Edu subset.</p>
+
+    <h2>Web data</h2>
+    <h3>Finding the raw data</h3>
+    <p>A common question often asked regarding web datasets used
+        to train LLMs is “where do they even get all that data?”. There are generally two options:</p>
+    <ul>
+        <li>you either crawl it yourself, like companies such as OpenAI or Anthropic (among others) do (see <a
+                href="https://platform.openai.com/docs/gptbot">here</a> and <a
+                href="https://darkvisitors.com/agents/claudebot">here</a>)
+        </li>
+    </ul>
+    <ul>
+        <li>you use a public repository of crawled webpages, like the one maintained by
+            the non-profit <a href="https://commoncrawl.org/">CommonCrawl</a></li>
+    </ul>
+    <p>To build 🍷 FineWeb, following what has been done in the past by a number of LLM training teams,
+      we used <a href="https://commoncrawl.org/">CommonCrawl</a> (CC) as a starting point.
+        The Common Crawl non–profit organization has been crawling the web since 2007 and
+        releases a new crawl containing 200 to 400 TiB of textual content obtained via automatic web crawling usually
+        every 1 or 2 months. </p>
+    <p>As an example, the latest CC crawl (April 2024) contains 2.7
+        billion web pages, totaling 386 TiB of uncompressed HTML text content<d-footnote>Note that the size changes from crawl to crawl. Note also that we use "dump" or "crawl" interchangeability in this report.</d-footnote>.
+      Ninety-six crawls have been released since 2013 and 3 crawls from 2008 to 2012, which are in a different (older) format.
+      <d-footnote>We have not processed these 3 older crawls.</d-footnote> </p>
+  
+    <h3>Processing at scale</h3>
+    <p>Given the sheer size of the data involved, one of the main
+        challenges we had to overcome was having a modular, scalable codebase that would allow us to quickly iterate
+        on our processing decisions and easily try out new ideas, while appropriately parallelizing our workloads
+        and providing clear insights into the data. </p>
+    <p>For this purpose, we developed <a
+            href="https://github.com/huggingface/datatrove"><code>datatrove</code></a><d-cite bibtex-key="penedo2024datatrove"></d-cite>, an open-source data
+        processing library that allowed us to seamlessly scale our filtering and deduplication setup to thousands of
+        CPU cores. All the data processing steps involved in the creation of 🍷 FineWeb used this <a
+                href="https://github.com/huggingface/datatrove">library</a>. You will find the exact scripts we used in the
+        <a href="https://github.com/huggingface/datatrove/blob/main/examples/fineweb.py"><code>datatrove</code> repository</a>.</p>
+
+    <h3>What is good data?</h3>
+    <p>This is probably the main question to keep in mind when
+        creating a dataset. In most contexts and, in particular, in the context of large language model pretraining <d-footnote>Note that this report is focused on the special field of web-scale datasets ("web-scale" typically meaning >100 billion tokens obtained from the web) used to pretrain a Large Language Model (by pretraining we mean the very first step in the training of a model, starting from random weights). We don't pretend to cover any other field of dataset creation nor that the lessons or hypothesis we develop in this document can extend to any field besides this specific field.</d-footnote>, "high quality" is not a very well defined term<d-cite bibtex-key="albalak2024survey"></d-cite><d-cite bibtex-key="mitchell2023measuring"></d-cite>, and not even a property of documents that can always be clearly perceived through direct human observation alone.<d-cite bibtex-key="longpre2023pretrainers"></d-cite></p>
+    <p>It is still common to train a model on a given corpus considered "clean"
+        (typically wikipedia<d-footnote>Even though as we mentioned above the notion of "clean" is so ill-defined that it should probably not been seen as equivalent to wikipedia-type of text</d-footnote>) and use it to check the perplexity on the dataset
+        that we were trying to curate<d-cite bibtex-key="wenzek2019ccnet"></d-cite>. Unfortunately this does not always correlate with improved performance on a set of downstream
+        tasks of interest<d-cite bibtex-key="soldaini2024dolma"></d-cite>, and as a result another often used approach is to train small models<d-footnote>"Small" in comparison to standard sizes of today's LLMs, i.e. small in comparison to 7-70 billion parameters. In this work "small" means about 1-2 billion parameters</d-footnote> on a representative subset of our dataset and evaluate them on
+        a set of evaluation tasks. Small models are used because training costs and time are a function of model size. In this second approach, it is important to
+        choose a diverse and representative set of dataset-evaluation tasks and try not to overfit to any one individual benchmark as it would risk hurting the generality of the obtained LLM after pretraining.</p>
+    <p>Yet another way to compare different datasets would be to
+        train a model on each dataset and have humans rate and compare the generations of the models (like on the <a
+                href="https://chat.lmsys.org/">LMSYS Chatbot Arena</a>)<d-cite bibtex-key="chiang2024chatbot"></d-cite>. This would arguably provide the most
+        reliable results in terms of representing real model usage, but getting ablation results this way is unfortunately
+        expensive and slow. It also often requires for the models to have undergone an instruction finetuning stage to acquire conversational capabilities, as pretrained models are not directly designed to follow instructions and are thus much more sensitive to prompt details.<d-cite bibtex-key="ouyang2022training"></d-cite></p>
+    <p>In this work, we went with the approach of training small
+        models and evaluating them on a set of "early-signal" benchmark tasks. We believe this is a reasonable proxy for the quality
+        of the data used to train these models, when keeping in mind the above-mentioned caveat around overfitting on the evaluation benchmarks.</p>
+    <h3>Ablations and evaluation setup</h3>
+    <p>To compare the impact of a given processing
+        step, we trained two models on two versions of the dataset, one version processed with the extra step (the one we wish to evaluate) and another version with this step
+        ablated (cut/removed). Apart from the data, these two models would be otherwise identical: the same number of parameters, architecture hyper-parameters, and trained
+        on an equal number of randomly sampled tokens from each version of the data, for a single epoch — the only difference being thus the
+        training data. We then evaluated each model on the same set of tasks and compared average
+        scores.</p>
+    <p>Our ablation models were trained using <a
+            href="https://github.com/huggingface/nanotron"><code>nanotron</code></a>. Our "ablation models" have 1.82B parameters (including embeddings), used the Llama
+        architecture with a 2048 sequence length, a global batch size of ~2 million tokens, and the GPT2 tokenizer. For most
+        ablations we trained on ~28B tokens (roughly the Chinchilla<d-cite bibtex-key="hoffmann2022training"></d-cite> optimal training size for this
+        model size). To confirm relative performance improvements after each step of filtering we conducted longer training runs on 350 billion tokens as mentioned further below.</p>
+        <aside>We'll make the configuration to reproduce these ablation models available soon in Nanotron.</aside>
+    <p>We evaluated the models using <a
+            href="https://github.com/huggingface/lighteval/"><code>lighteval</code></a>. We carefully selected a set of benchmark for ablations by selecting
+        benchmarks that would provide good signal at a relatively small scale ("small" models trained on only "a few
+        billion" tokens). We generally used the following criteria to select these benchmarks among all the benchmarks available in <code>lighteval</code>:</p>
+    <ul>
+        <li>small variance between runs trained on different samplings of the same
+            dataset: we want our runs on a subset of the data to be representative of the whole dataset, and the
+            resulting scores to be, in the limit of what is possible, less sensitive to exact data point choices than to our filter's effect
+        </li>
+    </ul>
+    <ul>
+        <li>performance increasing monotonically (or close) over a training run:
+            ideally, as the number of seen tokens increases, the performance on a high-signal benchmark should not decrease
+            (which would be indicative of unreliable results at a small scale)
+        </li>
+    </ul>
+    <ul>
+        <li>performance above random baseline for this task by at least a few standard deviations: given our small ablation models and trainings we usually don't reach extremely high scores on any benchmark, but we want to make sure that the scores we get are above random noise.
+        </li>
+    </ul>
+    <p>After consideration, we selected the following list of benchmarks:</p>
+    <ul>
+        <li>CommonSense QA<d-cite bibtex-key="talmor-etal-2019-commonsenseqa"></d-cite></li>
+        <li>HellaSwag<d-cite bibtex-key="zellers-etal-2019-hellaswag"></d-cite></li>
+        <li>OpenBook QA<d-cite bibtex-key="OpenBookQA2018"></d-cite></li>
+        <li>PIQA<d-cite bibtex-key="bisk2019piqa"></d-cite></li>
+        <li>SIQA<d-cite bibtex-key="sap2019socialiqa"></d-cite></li>
+        <li>WinoGrande<d-cite bibtex-key="sakaguchi2019winogrande"></d-cite></li>
+        <li>ARC<d-cite bibtex-key="clark2018think"></d-cite></li>
+        <li>MMLU<d-cite bibtex-key="hendrycks2021measuring"></d-cite></li>
+    </ul>
+    <p>To
+        ensure our checkpoint evaluation stayed within a limited timeframe, we capped the longer benchmarks at 1000 samples (wall-clock evaluation taking less than 5
+        min on a single node of 8 GPUs - done in parallel to the training).</p>
+    <aside>You can find the full list of tasks and prompts we used <a
+            href="https://huggingface.co/datasets/HuggingFaceFW/fineweb/blob/main/lighteval_tasks.py">here</a>.</aside>
+    <h2>The 🍷 FineWeb recipe</h2>
+    <p>In the next subsections we will explain each of the steps
+        taken to produce the FineWeb dataset.</p>
+    <figure class="l-body">
+        <img src="assets/images/fineweb-recipe.png"/>
+    </figure>
+    <aside>You can find a fully reproducible <code>datatrove</code> config <a
+                href="https://github.com/huggingface/datatrove/blob/main/examples/fineweb.py">here</a>.</aside>
+    <h3>Starting point: text extraction</h3>
+    <p>CommonCrawl data is available in two main formats: WARC
+        and WET. <strong>WARC </strong>(Web ARChive format) files contain the raw data from the crawl, including the
+        full page HTML and request metadata. <strong>WET</strong> (WARC Encapsulated Text) files provide a text only
+        version of those websites.</p>
+    <p>A large number of datasets take the WET files as their
+        starting point. In our experience the default text extraction used by Common Crawl to create these WET files is suboptimal for the goals of LLM pretraining<d-footnote>In particular we suspect that it keeps too much boilerplate content and navigation menus.</d-footnote> and there are a variety of open-source libraries that
+        provide better text extraction. We extracted
+        the text content from the WARC files using the trafilatura library<d-cite bibtex-key="barbaresi-2021-trafilatura"></d-cite>, which from visual inspection of the results provided good quality extraction when compared to other libraries.</p>
+    <aside>You can find a benchmark comparing several text extraction libraries <a href="https://github.com/scrapinghub/article-extraction-benchmark/blob/master/README.rst">here</a>.</aside>
+    <p>To validate this decision, we processed the 2019-18 dump
+        directly using the WET files and with text extracted from WARC files using trafilatura<d-footnote>We used trafilatura default options with <code>favour_precision=True</code>.</d-footnote>. We applied the same
+        processing to each one (our base filtering+minhash, detailed below) and trained two models. While the
+        resulting dataset is about 25% larger for the WET data (around 254 billion tokens), it proves to be of much worse
+        quality than the one that used trafilatura to extract text from WARC files (which is around 200 billion tokens). Visual inspection of some samples confirms that many of
+        these additional tokens on the WET files are unnecessary page boilerplate.</p>
+    <p>It is important to note, however, that text extraction is one of the most costly steps of our
+        processing, so we believe that using the readily available WET data could be a reasonable trade-off for
+        lower budget teams.</p>
+    <div class="main-plot-container">
+        <figure><img src="assets/images/wet_comparison.png"/></figure>
+        <div id="plot-wet_comparison"></div>
+    </div>
+
+    <h3>Base filtering</h3>
+    <p>Filtering is an important part of the curation process. It consists in
+        removing part of the data (be it words, lines, or even full documents) that lowers the performance of the model and is thus
+        deemed to be “lower quality” in our eval-driven process of dataset crafting.</p>
+    <p>As a basis for our filtering we used part of the setup
+        from RefinedWeb<d-cite bibtex-key="penedo2023refinedweb"></d-cite>. Namely, we:</p>
+    <ul>
+        <li>Applied URL filtering using a <a
+                href="https://dsi.ut-capitole.fr/blacklists/">blocklist</a> to remove adult content
+        </li>
+    </ul>
+    <ul>
+        <li>Applied a <a
+                href="https://fasttext.cc/docs/en/language-identification.html">fastText language classifier</a><d-cite bibtex-key="joulin2016bag"></d-cite><d-cite bibtex-key="joulin2016fasttext"></d-cite> to
+            keep only English text with a score ≥ 0.65
+        </li>
+    </ul>
+    <ul>
+        <li>Applied quality and repetition filters from MassiveText<d-cite bibtex-key="rae2022scaling"></d-cite> (using the default thresholds)
+        </li>
+    </ul>
+    <p>After applying this filtering to each of the text
+        extracted dumps (there are currently 96 dumps) we obtained roughly 36 trillion tokens of data<d-footnote>As everywhere in this report: this is the number of tokens when tokenized with the <code>gpt2</code> tokenizer</d-footnote>.</p>
+    <h3>Deduplicating the data</h3>
+    <p>Deduplication is one of the most important steps when creating large web datasets for LLM pretraining. Methods to deduplicate datasets attempt to identify and remove redundant/repeated data from the dataset. </p>
+    <h4>Why deduplicate?</h4>
+    <p>The web has many aggregators, mirrors, templated pages or
+        just otherwise repeated content spread over different domains and webpages. Sometimes, these duplicated pages
+        can even be introduced by the crawler itself, when different links point to the same page. </p>
+    <p>Removing these duplicates (deduplicating) has been correlated with improvements in model performance<d-cite bibtex-key="lee2022deduplicating"></d-cite> and a reduction in memorization of pretraining data<d-cite bibtex-key="carlini2023quantifying"></d-cite>, which might
+        allow for better generalization. Additionally, the performance uplift obtained through deduplication can be equated to increased training
+        efficiency: by removing duplicated content, a model can reach the same performance level with fewer training iterations – or equivalently, for a given number of training tokens, a model will have seen more diverse data.<d-cite bibtex-key="muennighoff2023scaling"></d-cite><d-cite bibtex-key="hernandez2022scaling"></d-cite></p>
+    <p>There are different ways to identify and even define
+        duplicated data. Common approaches rely on hashing techniques to speed up the process, or on building
+        efficient data structures to index the data (like suffix arrays). Methods can also be “fuzzy”, by using some
+        similarity metric to mark documents as duplicates, or “exact” by checking for exact matches between two
+        documents (or lines, paragraphs, or whatever other granularity level being used)<d-footnote>Note that here, even when we discuss "fuzzy" deduplication, we are only employing methods that operate on character/word matches, aka surface-level text. A more complex concept of deduplication is concerned with "semantic" deduplication: comparing/removing texts which are relative to the same concepts and use for instance synonyms or paraphrasing. We don't discuss these topics here but note that they can be important in the field of large-scale synthetic data generation for instance (see our <a href="https://huggingface.co/blog/cosmopedia">Cosmopedia release</a> on this topic)</d-footnote>.</p>
+        
+    <h4>Our deduplication parameters</h4>
+    <p>Following RefinedWeb<d-cite bibtex-key="penedo2023refinedweb"></d-cite>, we decided to apply MinHash, a
+        fuzzy hash based deduplication technique that scales efficiently to many CPU-nodes and allows us to tune similarity thresholds (by controlling the number and size of buckets) as well as the length of the subsequences considered (by controlling the n-gram size). We chose to collect each document's 5-grams<d-footnote>Our units are "words", computed in the <a href="https://github.com/huggingface/datatrove/blob/e9963f69f1fbab1a61339bd1b497f6e138b9f47f/src/datatrove/pipeline/dedup/minhash.py#L196">MinHash processing function</a> with a <a href="https://github.com/huggingface/datatrove/blob/e9963f69f1fbab1a61339bd1b497f6e138b9f47f/src/datatrove/utils/word_tokenizers.py#L323">language-specific word tokenizer</a>.</d-footnote> and compute minhashes using
+        112 hash functions in total, split into 14 buckets of 8 hashes each — targeting documents that are at least
+        75% similar. Documents with the same 8 minhashes in any bucket are considered a duplicate of each other.</p>
+    <p>This would mean that for two documents with a similarity (s)
+        of 0.7, 0.75, 0.8 and 0.85, the probability that they would be identified as duplicates would be 56%, 77%,
+        92% and 98.8% respectively (1-(1-s^8)^{14}). See the plot below for a match probability
+        comparison between our setup with 112 hashes and the one from RefinedWeb, with 9000 hashes, divided into 450
+        buckets of 20 hashes (that requires a substantially larger amount of compute resources, as each individual hash must be computed, stored and then compared with hashes from other documents):</p>
+    <div class="main-plot-container">
+        <figure><img src="assets/images/minhash_params.png"/></figure>
+        <div id="plot-minhash_params"></div>
+    </div>
+    <p>While the high number of hash functions in RefinedWeb
+        allows for a steeper, more well defined cut off (documents with real similarity near the threshold are more likely to be correctly identified), we believe the compute and storage savings are a reasonable
+        trade off.</p>
+    <p>It should also be noted that intra-document deduplication is already handled by our repetition filter, which removes documents with many repeated lines and paragraphs.</p>
+    
+    <h4>More deduplication is always better, right?</h4>
+    <p>Initially, we were operating under the assumption that <em>more deduplication is always better</em>, so our first approach was to take the entire dataset (all
+        90+ dumps) and deduplicate them together as one big dataset using MinHash.</p>
+    <p>We did this in an iterative manner: starting with the most
+        recent dump (which at the time was 2023-50) and proceeding chronologically until we reached the oldest crawl. We deduplicated each dump
+        not only within itself, but removing any document matching any other documents in the previously processed
+        dumps. </p>
+    <p>For instance, for the second most recent dump (2023-40 at
+        the time), we deduplicated it against the most recent one in addition to within itself. As a result, the older the dumps, the larger the number of dumps it was deduplicated against and the more data we removed from it (indeed, in the oldest dumps, the deduplication step removed more than 90% of the base filtered data).</p>
+    <p>Deduplicating the dataset in this manner resulted in 4
+        trillion tokens of data, but, quite surprisingly to us, when training on a randomly sampled 350 billion
+        tokens subset, our ablation models showed next to no improvement over a model trained on the non deduplicated data, scoring far below its predecessor RefinedWeb on our aggregate of tasks (see graph below).</p>
+    <div class="main-plot-container">
+        <figure><img src="assets/images/dedup_all_dumps_bad.png"/></figure>
+        <div id="plot-all_dumps_bad"></div>
+    </div>
+    <p>This challenged our assumption that more deduplication would inevitably result in higher benchmark scores, so we decided to take a closer look at one of the oldest dumps, dump 2013-48:</p>
+    <ul>
+        <li>pre deduplication, this dump had ~490 billion tokens</li>
+    </ul>
+    <ul>
+        <li>after our iterative MinHash, ~31 billion tokens remained (94% of data had been
+            removed)
+        </li>
+    </ul>
+    <p>As an experiment, we tried training two models on 28 billion tokens
+        sampled from the following data from 2013-48:</p>
+    <ul>
+        <li>the fully deduplicated remaining ~31 billion tokens (<em>originally kept
+            data</em>)
+        </li>
+    </ul>
+    <ul>
+        <li>171 billion tokens obtained by individually deduplicating (without
+            considering the other dumps) the ~460 billion tokens that had been removed from this dump in the
+            iterative dedup process (<em>originally removed data</em>)<d-footnote>While there may be documents in <em>originally kept
+            data</em> similar to documents in <em>originally removed data</em>, we estimate the overlap to be small (around 4 billion tokens)</d-footnote>
+        </li>
+    </ul>
+    <div class="main-plot-container">
+        <figure><img src="assets/images/removed_data_cross_dedup.png"/></figure>
+        <div id="plot-removed_data_dedup"></div>
+    </div>
+    <p>These results show that, for this older dump taken in isolation, the data that was kept (10% of the original data) was actually <em>worse</em> than the 90% of data we
+        removed<d-footnote>Note that these ablation models are trained only on data from this dump so it's considered independently of all the other dumps.</d-footnote>. This is also confirmed by visual inspection: <em>originally kept
+            data</em> contains far more ads, lists of keywords and generally badly formatted text than <em>originally removed data</em>.</p>
+    <h4>Taking a step back: individual dump dedup</h4>
+    <p>We decided to experiment with an alternative approach: we deduplicated
+        each dump with MinHash individually (independently of the other dumps). This resulted in 20 trillion
+        tokens of data.</p>
+    <p>When training on a random sample from this dataset we see
+        that it now matches RefinedWeb’s performance (see curves below):</p>
+    <div class="main-plot-container">
+        <figure><img src="assets/images/cross_ind_unfiltered_comparison.png"/></figure>
+        <div id="plot-ind_dedup_better"></div>
+    </div>
+    <p>We hypothesize that the main improvement gained from
+        deduplication is the removal of very large clusters that are present in every single dump (you will find
+        some examples of these clusters in the RefinedWeb paper, each containing <em>hundreds of thousands</em> of
+        documents) and that further deduplication for clusters with a low number of duplicates (less than ~100 i.e. the number
+        of dumps) actually harms performance: data that does not find a duplicate match in any other dump might
+        actually be worse quality/more out of distribution (as evidenced by the results on the 2013-48 data). </p>
+    <p>While you might see some performance improvement when
+        deduplicating a few dumps together, at the scale of the entire dataset (all the dumps), the effect from this upsampling of lower quality data side
+        effect seems to be more impactful.</p>
+    <p>One possibility to consider is that as filtering quality
+        improves, this effect may not be as prevalent, since the filtering might be able to remove some of this
+        lower quality data. We also experimented with applying different, and often “lighter”, deduplication
+        approaches on top of the individually deduplicated dumps. You can read about them further below.</p>
+    
+        <h4>A note on measuring the effect of deduplication</h4>
+    <p>Given the nature of deduplication, its effect is not
+        always very visible in a smaller slice of the dataset (such as 28B tokens, the size we used for our
+        filtering ablations). Furthermore, one must consider the fact that there are specific effects at play when
+        deduplicating across all CommonCrawl dumps, as some URLs/pages are recrawled from one dump to the next.</p>
+    <p>To visualize the effect of scaling the number of training
+        tokens on measuring deduplication impact, we considered the following (very extreme and unrealistic
+        regarding the degree of duplication observed) theoretical scenario:</p>
+    <ul>
+        <li>there are 100 CommonCrawl dumps (roughly accurate)</li>
+    </ul>
+    <ul>
+        <li>each dump has been perfectly individually deduplicated (every single
+            document is unique in this dump)
+        </li>
+    </ul>
+    <ul>
+        <li>each dump is a perfect copy of each other (maximum possible duplication
+            across dumps, effectively the worst case scenario)
+        </li>
+    </ul>
+    <ul>
+        <li>each dump has 200 billion tokens (for a total of 20 trillion, the resulting
+            size of our individual dedup above)
+        </li>
+    </ul>
+    <ul>
+        <li>each dump is made up of documents of 1k tokens (200M documents per dump)
+        </li>
+    </ul>
+    <p>We then simulated uniformly sampling documents from this
+        entire dataset of 20 trillion tokens, to obtain subsets of 1B, 10B, 100B, 350B and 1T tokens. In the image
+        below you can see how often each document would be repeated.</p>
+    <div class="main-plot-container">
+        <figure><img src="assets/images/duplicates_simul.png"/></figure>
+        <div id="plot-duplicates-simul"></div>
+    </div>
+    <p>For 1B almost all documents would be unique
+        (#duplicates=1), despite the fact that in the entire dataset each document is repeated 100 times (once per
+        dump). We start seeing some changes at the 100B scale (0.5% of the total dataset), with a large number of
+        documents being repeated twice, and a few even 4-8 times. At the larger scale of 1T (5% of the total
+        dataset), the majority of the documents are repeated up to 8 times, with some being repeated up to 16
+        times. </p>
+    <p>We ran our performance evaluations for the deduplicated
+        data at the 350B scale, which would, under this theoretical scenario, be made up of a significant portion of
+        documents duplicated up to 8 times. This simulation illustrates the inherent difficulties associated with
+        measuring deduplication impact on the training of LLMs, once the biggest duplicate clusters have been
+        removed.</p>
+
+    <h4>Other (failed) global approaches</h4>
+    <p>To build on top of our newly found method (independently deduplicating each dump). We attempted to improve the performance by further deduplicating the
+        independently minhash deduped 20 trillion tokens of data with alternative global (over all dumps) deduplication methods. We explored the following approaches:</p>
+    <ul>
+        <li>URL deduplication, where we only kept one document per normalized
+            (lowercased) URL (71.5% of tokens removed, 5.6T left) — <em>FineWeb URL dedup</em></li>
+    </ul>
+    <ul>
+        <li>Line deduplication:
+            <ul>
+                <li>remove all but 1 (randomly chosen) occurrence of each duplicated line (77.8% of
+                    tokens dropped, 4.4T left) — <em>FineWeb line dedup</em></li>
+            </ul>
+            <ul>
+                <li>same as above, but only removing duplicate lines with at least 10
+                    words and dropping documents with fewer than 3 sentences after deduplication (85% of tokens
+                    dropped, 2.9T left) — <em>FineWeb line dedup w/ min words</em></li>
+            </ul>
+            <ul>
+                <li>remove all but 1 occurrence of each span of 3 duplicated lines
+                    with each number treated as 0 when finding duplicates, (80.9% of tokens removed, 3.7T left) — <em>FineWeb 3-line
+                        dedup</em></li>
+            </ul>
+        </li>
+    </ul>
+    <p>The performance of the models trained on each of these was
+        consistently worse (even if to different degrees) than that of the original independently deduplicated
+        data:</p>
+    <div class="main-plot-container">
+        <figure><img src="assets/images/dedup_attempts.png"/></figure>
+        <div id="plot-dedup_attempts"></div>
+    </div>
+
+    <h3>Additional quality filtering</h3>
+    <p>By this point we had reached the same performance of the previous work we attempted to reproduce and extend:
+        RefinedWeb, using our base filtering and independent MinHash. Still, on our aggregate of tasks, another heavily filtered dataset, the C4 dataset<d-cite bibtex-key="raffel2023exploring"></d-cite>, still showed stronger performances on some benchmarks of our evaluation suite.</p>
+    <p>We therefore set out to find new filtering steps that
+        would, at first, allow us to match the performance of C4 and, at a second stage, surpass it. A natural starting point
+        was to look into the processing of C4 itself.</p>
+    <h4>C4: A dataset that has stood the test of time</h4>
+    <p>The <a href="https://huggingface.co/datasets/c4">C4
+        dataset</a> was first released in 2019. It was obtained from the <code>2019-18</code> CommonCrawl dump by
+        removing non english data, applying some heuristic filters on both the line and document level,
+        deduplicating on the line level, and removing documents containing words from a word blocklist.</p>
+    <p>Despite its age and limited size for current standards (around 175B gpt2 tokens), this dataset is, to this day, a common sub-set of typical LLM training, being used in models such as the relatively recent Llama1<d-cite bibtex-key="touvron2023llama"></d-cite>.
+        This success is due to the strong performance that models trained on this dataset exhibit, excelling in particular on the Hellaswag
+        benchmark <d-cite bibtex-key="zellers-etal-2019-hellaswag"></d-cite>, one of the benchmarks in our “early signal” group with the highest
+        signal-to-noise ratio. We experimented applying
+        each of the different filters used in C4 to a baseline of the independently deduped FineWeb 2019-18 dump:</p>
+    <div class="main-plot-container">
+        <figure><img src="assets/images/c4_filters_hellaswag.png"/></figure>
+        <div id="plot-c4_filters_hellaswag"></div>
+    </div>
+    <ul>
+        <li>applying “All filters” (drop lines not ending on punctuation marks,
+            mentioning javascript and cookie notices + drop documents outside length thresholds, containing “lorem
+            ipsum” or a curly bracket, <code>{</code>) allows us to match C4’s HellaSwag performance ("All filters" vs "C4" curves, respectively).
+        </li>
+    </ul>
+    <ul>
+        <li>The curly bracket filter, and the word lengths filter only give a small
+            boost, removing 2.8% and 4.3% of tokens, respectively
+        </li>
+    </ul>
+    <ul>
+        <li>The terminal punctuation filter, by itself, gives the biggest individual
+            boost, but removes <em>around 30%</em> of all tokens (!)
+        </li>
+    </ul>
+    <ul>
+        <li>The lorem_ipsum, javascript and policy rules each remove &lt;0.5% of
+            training tokens, so we did not train on them individually
+        </li>
+    </ul>
+    <ul>
+        <li>"All filters except the (very destructive) terminal_punct" performs better than
+            terminal_punct by itself, while removing less in total (~7%)
+        </li>
+    </ul>
+    <p>We decided to apply all C4 filters mentioned above except
+        the terminal punctuation one. We validated these results with a longer run, which you will find in a plot in
+        the next section.</p>
+    <h4>A statistical approach to develop heuristic filters</h4>
+    <p>To develop new heuristic filters and select their thresholds we devised a systematic process:</p>
+    <ol><li>we started by collecting a very large list of high level statistics of our datasets (over <strong>fifty</strong> different metrics) ranging from common document-level
+        metrics (e.g. number of lines, avg. line/word length, etc) to inter-document repetition metrics (inspired by MassiveText), on both a high quality and a lower quality web dataset;</li>
+        <li>we selected the metrics for which the Wasserstein distance between the two distributions (of the metric computed on each dataset) was larger;</li>
+        <li>we inspected the histograms of the two distributions and empirically chose a threshold that would make the lower quality dataset more closely resemble the higher quality one on this metric;</li>
+        <li>we validated the resulting filter (metric-threshold pair) by using it on a reference dataset and running small ablations.</li>
+    </ol>
+    <p>Due to our (new) assumption that global MinHash greatly upsamples lower quality data in the oldest dumps, we computed metrics on both the independently
+        MinHashed and the (worse quality) global MinHashed versions of the 2013-48 and 2015-22 crawls (two older crawls). We then compared the
+        statistics at a macro level, by looking at the distribution of these metrics for each one.</p>
+    <p>Perhaps not too surprisingly given our findings for deduplication, we found significant
+        disparities in most of the metrics for the two deduplication methods. For instance, the <code>line-char-duplicates</code>
+        metric (nb. of characters in duplicated lines / nb. characters), roughly doubled from the independent dedup
+        (0.0053 for 2015-22 and 0.0058 for 2013-48), to the global dedup (0.011 for 2015-22 and 0.01 for 2013-48),
+        indicating that the latter had higher inter-document repetition.</p>
+    <p>Following the process listed above for these datasets yielded <strong>seventeen</strong> candidate
+        metric-threshold pairs. In the image below, you can see three of these histograms:</p>
+    <div class="main-plot-container">
+        <figure><img src="assets/images/stats.png"/></figure>
+        <div id="plot-stats"></div>
+    </div>
+
+    <p>As an example, we inspected the histograms of "fraction of lines ending with punctuation" (see the image above) and observed an increased document density of global MinHash at around 0.12.
+        We then filtered with this threshold and found that the removed data had a higher amount of short lists or consisted of only document layout text ("Home", "Sign up", etc).
+    </p>
+
+    <p>We then assessed the effectiveness of these seventeen newly created
+        filters, by conducting several of our <em>28 billion tokens</em> ablation runs on the <em>2019-18 crawl</em>. Out
+        of all those runs, we identified <strong>three</strong> filters (the ones based on the histograms above) that demonstrated
+        the most significant improvements on the aggregate score:</p>
+    <ul>
+        <li>Remove documents where the fraction of lines ending with punctuation ≤ 0.12
+            (10.14% of tokens removed) — vs the 30% from the original C4 terminal punct filter
+        </li>
+    </ul>
+    <ul>
+        <li>Remove documents where the fraction of characters in duplicated lines ≥ 0.1
+            (12.47% of tokens removed) — the original MassiveText threshold for this ratio is ≥ 0.2
+        </li>
+    </ul>
+    <ul>
+        <li>Remove documents where the fraction of lines shorter than 30 characters ≥
+            0.67 (3.73% of tokens removed)
+        </li>
+    </ul>
+    <ul>
+        <li>When applying the three together, ~22% of tokens were removed.</li>
+    </ul>
+    <div class="main-plot-container">
+        <figure><img src="assets/images/custom_filters.png"/></figure>
+        <div id="plot-custom_filters"></div>
+    </div>
+    <p>These filters allowed us to further improve performance and to, notably, surpass the C4 dataset performance while providing a much larger dataset at the same time.</p>
+
+    <h3>The final 🍷 FineWeb dataset</h3>
+    <p>The final <a href="https://huggingface.co/datasets/HuggingFaceFW/fineweb">🍷 FineWeb</a> dataset comprises 15T tokens and
+        includes the following previously mentioned steps, in order, each providing a performance boost on our group
+        of benchmark tasks:</p>
+    <ul>
+        <li>base filtering</li>
+    </ul>
+    <ul>
+        <li>independent MinHash deduplication per dump</li>
+    </ul>
+    <ul>
+        <li>a selection of C4 filters</li>
+    </ul>
+    <ul>
+        <li>our custom filters (mentioned in the previous section)</li>
+    </ul>
+    <div class="main-plot-container">
+        <figure><img src="assets/images/filtering_steps.png"/></figure>
+        <div id="plot-all_filtering_steps"></div>
+    </div>
+    <h4>Comparisons with other web-scale datasets</h4>
+    <p>We compared <a href="https://huggingface.co/datasets/HuggingFaceFW/fineweb">🍷 FineWeb</a> with the following datasets that are usually considered the highest quality openly accessible web-scale datasets (we also indicate for each the approximate number of tokens in the public version of the dataset):</p>
+    <ul>
+        <li><a
+                href="https://huggingface.co/datasets/tiiuae/falcon-refinedweb">RefinedWeb</a> (500B tokens)<d-cite bibtex-key="penedo2023refinedweb"></d-cite>
+        </li>
+    </ul>
+    <ul>
+        <li><a href="https://huggingface.co/datasets/allenai/c4">C4</a> (172B tokens)<d-cite bibtex-key="raffel2023exploring"></d-cite></li>
+    </ul>
+    <ul>
+        <li><a href="https://huggingface.co/datasets/allenai/dolma">Dolma v1.6</a> (3T tokens) (the
+            CommonCrawl part) <d-cite bibtex-key="dolma"></d-cite> <d-footnote>There is a newer version of Dolma, v1.7, which is smaller</d-footnote>
+        </li>
+    </ul>
+    <ul>
+        <li><a href="https://huggingface.co/datasets/EleutherAI/pile">The Pile</a> (340B tokens) <d-cite bibtex-key="gao2020pile"></d-cite></li>
+    </ul>
+    <ul>
+        <li><a
+                href="https://huggingface.co/datasets/cerebras/SlimPajama-627B">SlimPajama</a> (627B tokens) <d-cite bibtex-key="cerebras2023slimpajama"></d-cite>
+        </li>
+    </ul>
+    <ul>
+        <li><a
+                href="https://huggingface.co/datasets/togethercomputer/RedPajama-Data-V2">RedPajama2</a> (20T tokens) <d-cite bibtex-key="together2023redpajama"></d-cite>
+            (deduplicated)
+        </li>
+    </ul>
+    <ul>
+        <li> and our new <a href="https://huggingface.co/datasets/HuggingFaceFW/fineweb">🍷 FineWeb</a> (15T tokens) (this report)
+        </li>
+    </ul>
+    <p>You will find the 350B-tokens-trained ablation models openly accessible and gathered in <a
+            href="https://huggingface.co/collections/HuggingFaceFW/ablation-models-662457b0d213e8c14fe47f32">this
+        collection</a>. We have uploaded checkpoints at every 1000 training steps. You will also find our full <a
+            href="https://huggingface.co/datasets/HuggingFaceFW/fineweb/blob/main/eval_results.csv">evaluation
+        results here</a>.</p>
+    <div class="main-plot-container">
+        <figure><img src="assets/images/dataset_ablations.png"/></figure>
+        <div id="plot-dataset_ablations"></div>
+    </div>
+    <p>🍷 FineWeb is thus – to the best of our knowledge – the open dataset leading to the current highest model performances while allowing to train on several trillion tokens.</p>
+
+    <h2>📚 FineWeb-Edu</h2>
+
+    <div class="main-plot-container">
+        <figure>
+            <img src="assets/images/edu_ablations.png">
+            <figcaption style="font-style: italic; margin-top: 10px;">📚 FineWeb-Edu outperforms 🍷 FineWeb and all other open web datasets on our group of evaluation tasks.</figcaption>
+        </figure>
+        <div id="plot-edu_ablations">
+        </div>
+    </div>
+    <p><a href="https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu">📚 FineWeb-Edu</a> is an additional development of FineWeb that we are excited to introduce in this tech report and openly release. 📚 FineWeb-Edu is based on a new approach that has recently emerged for filtering LLM training datasets: using synthetic data to develop classifiers for identifying educational content. This technique was notably used in the trainings of Llama 3<d-cite bibtex-key="llama3modelcard"></d-cite> and Phi3<d-cite bibtex-key="abdin2024phi"></d-cite>, but its large-scale impact on web data filtering has, in our opinion, thur far not been publicly explored to its full potential.</p>
+    <p>The popular Phi3 models were trained on 3.3 and 4.8 trillion tokens, with the paper<d-cite bibtex-key="abdin2024phi"></d-cite> stating:</p>
+    <blockquote>Our training data consists of heavily filtered publicly available web data (according to the 'educational level') from various open internet sources, as well as synthetic LLM-generated data.</blockquote>
+    <p>Similarly, Llama 3 blog post<d-cite bibtex-key="meta2024responsible"></d-cite> notes:</p>
+    <blockquote>We found that previous generations of Llama are good at identifying high-quality data, so we used Llama 2 to help build the text-quality classifiers that are powering Llama 3.</blockquote>
+    <p>However, these classifiers and filtered datasets are not publicly available. To further enhance 🍷 FineWeb's quality, we developed an educational quality classifier using annotations generated by <a href="https://huggingface.co/meta-llama/Meta-Llama-3-70B-Instruct">Llama-3-70B-Instruct</a> to create <a href="https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu"><strong>📚 FineWeb-Edu</strong></a>.</p>
+
+    <h3>Annotating for educational quality at scale</h3>
+    <p>We used <a href="https://huggingface.co/meta-llama/Meta-Llama-3-70B-Instruct">Llama-3-70B-Instruct</a> to annotate 500k samples from 🍷 FineWeb, scoring each for their educational quality on a scale from 0 to 5.</p>
+    <p>We explored various prompt formats to automatically extract an educational score using an LLM and found that the additive scale by Yuan et al.<d-cite bibtex-key="yuan2024self"></d-cite> worked best. This scale allows the LLM to reason about each additional point awarded, unlike the single-rating Likert scale which fits samples into predefined boxes. Then, to avoid the LLM favoring highly technical pages like arXiv abstracts and submissions, we focused on grade-school and middle-school level knowledge. By setting a threshold of 3 (on a scale of 0 to 5) during the filtering process, we were able to also retain some high-level educational pages.</p>
+    <div style="text-align: center; margin: 20px 0;">
+        <img src="https://cdn-uploads.huggingface.co/production/uploads/61c141342aac764ce1654e43/fjZQ4izIj1rx1xQnBTKKr.png" alt="Prompt for LLM annotation" style="width: 90%; max-width: 800px; height: auto;">
+        <figcaption style="font-style: italic; margin-top: 10px;">Prompt used for Llama3 annotations of the educational score, also available <a href="https://huggingface.co/HuggingFaceFW/fineweb-edu-classifier/blob/main/utils/prompt.txt">here</a>.</figcaption>
+    </div>    
+    <p>In terms of open-weight models to use for annotating the data, we experimented with several models including <a href="https://huggingface.co/mistralai/Mixtral-8x7B-Instruct-v0.1">Mixtral-8x7B-Instruct</a> and <a href="https://huggingface.co/mistralai/Mixtral-8x22B-Instruct-v0.1">Mixtral-8x22B-Instruct</a>, <a href="https://huggingface.co/meta-llama/Meta-Llama-3-70B-Instruct">Llama-3-70B-Instruct</a> as well as a jury gathering the scores from these three models<d-cite bibtex-key="verga2024replacing"></d-cite>. In our experiments we found that using Llama3 alone gave the most reliable results.</p>
+
+    <h3>Training a classifier</h3>
+    <p>To scale our annotations to the trillions of tokens in FineWeb, we used the Llama3-70B annotations to train a small classifier. The model we used was a <a href="https://huggingface.co/Snowflake/snowflake-arctic-embed-m">Snowflake-arctic-embed</a> embedding model with a classification head with a single regression output on top of it. We trained this model on the 450,000 Llama 3 annotations for 20 epochs with a learning rate of 3e-4, freezing the embedding and encoder layers.  We saved the checkpoint with the highest F1 score on our held-out validation set of 45k samples, treating Llama 3 annotations as ground-truth. After training, we rounded the scores to integers from <code>0</code> to <code>5</code>.</p>
+    <p>We then converted the problem to a binary classification task by using a fixed threshold to determine if a file is educational. With a threshold of <code>3</code>, the model achieved an F1 score of 82% on the validation set, indicating strong performance in distinguishing high-quality educational content.</p>
+    <p>The classifier is available at: <a href="https://huggingface.co/HuggingFaceFW/fineweb-edu-classifier">HuggingFaceFW/fineweb-edu-classifier</a>. The training and inference code is available on  <a href="https://github.com/huggingface/cosmopedia/tree/main/classification">GitHub</a>.</p>
+    
+    <h3>Filtering and results</h3>
+    <p>We applied the classifier to the 15T tokens of 🍷 FineWeb, a process that required 6,000 H100 GPU hours. We investigated the impact of using different thresholds for the filtering and found that using a threshold of <code>3</code> gave the best overall results. Although using a threshold higher than <code>3</code> improves performance on knowledge and reasoning intensive benchmarks, it significantly degrades performance on HellaSwag and PIQA. The plot below shows the performance of each threshold compared to FineWeb on six different benchmarks; it uses a 1.82B model trained on 8B tokens.</p>
+    <div class="main-plot-container">
+        <figure>
+            <img src="assets/images/edu-8k.png">
+        </figure>
+        <div id="plot-edu-8k"></div>
+    </div>
+    <p><strong>Note:</strong> this ablation was conducted on 8B tokens from the 2024-10 dump for both the FineWeb and FineWeb-Edu subsets, which might not be representative of the entire dataset. The next ablation shows that the findings for threshold 3 hold on a longer run of 350B tokens from all FineWeb dumps, except for HellaSwag, where we noticed a slight performance degradation.</p>
+    <p>We built  📚 FineWeb-Edu by filtering out samples with scores lower than 3. This removed 92% of the dataset, leaving us with 1.3 trillion educational tokens.  To evaluate the effectiveness of this filtering at a larger scale, we conducted an ablation using a 1.82B model trained on 350 billion tokens, similar to the FineWeb filtering ablation mentioned above:</p>
+    <div class="main-plot-container">
+        <figure>
+            <img src="assets/images/edu-100k.png">
+        </figure>
+        <div id="plot-edu-100k"></div>
+    </div>
+    <p>Here are the key highlights of the ablation results above:</p>
+    <ul>
+        <li>📚 FineWeb-Edu <strong>surpasses 🍷 FineWeb and all other open web datasets, with remarkable improvements on educational benchmarks</strong> such as MMLU, ARC, and OpenBookQA.</li>
+        <li>It achieves the same performance with significantly less data, requiring 10x fewer tokens compared to C4 and Dolma to match MMLU results.</li>
+        <li>This demonstrates the effectiveness of using classifiers trained on LLM annotations for large-scale data filtering.</li>
+    </ul>
+    <p>Given that a threshold of 2 also demonstrated strong performance while retaining more data, we are releasing an additional dataset filtered with this threshold, containing 5.4 trillion tokens under <a href="https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu-score-2">HuggingFaceFW/fineweb-edu-score-2</a>.</p>
+    <p>You can find the two datasets along with the classifier used for the filtering in this <a href="https://huggingface.co/collections/HuggingFaceFW/fineweb-edu-6659c3f3d399d0e1d648adfd">collection</a>.</p>
+
+
+
+    <h2>Bonus: CommonCrawl over time</h2>
+    <blockquote>
+        <p>Just like fine wine, not all crawls are created equal.</p>
+    </blockquote>
+    <p>While ablating filtering steps, we noticed that certain crawls outperformed others by a significant margin. We decided to investigate this phenomenon.</p>
+    <h3>Benchmark performance by crawl</h3>
+    <p>For each crawl, we trained two 1.8B models on 27 billion tokens randomly sampled from that crawl's data (after the
+        base filtering and MinHash deduplication steps), where each run had a different random 27BT sampling of this data. We trained 192 such models, totaling over 60 thousand H100 GPU-hours. We subsequently took
+        the last 3 checkpoints for both runs and plotted the average of these 6 data points per crawl.</p>
+    <p>The plot below clearly shows that some dumps perform far
+        worse than others. Each year has a different color, and the number of crawls per year also varies.</p>
+    <div class="main-plot-container l-page-outset">
+        <figure>
+            <img src="assets/images/score_by_dump.png">
+        </figure>
+        <div id="plot-score_by_dump"></div>
+    </div>
+
+    <p>We investigated possible causes for this behaviour such as changes in the most common URLs of each dump, as well as potential benchmark contamination, but could not find any conclusive explanation. We leave further investigation for future work.</p>
+
+    <h3>Synthetic data</h3>
+    <p>We wondered if the strong performance of the last few crawls could be, in part, attributed to the presence of a larger quantity of synthetic data (data
+        generated by LLMs). Such a change would not be surprising due to the recent increase in popularity of LLMs,
+        notably of ChatGPT.</p>
+    <p>Since, to the best of our knowledge, there is no foolproof method to detect synthetic data, we opted to use a proxy metric: we measured the frequency of the
+        following words in each crawl: <code>"delve", "as a large language model", "it&#x27;s important to note", "rich tapestry",
+            "intertwined", "certainly!", "dive into"</code>, all of which are commonly used by ChatGPT.</p>
+    <p>It is important to note that not all samples containing
+        one of these phrases were necessarily generated by ChatGPT (and also that many ChatGPT generated samples do
+        not contain any of these phrases), but assuming that the amount of synthetic data were to not change across
+        crawls, one would expect these frequencies to remain approximately constant over time.</p>
+    <p>The results are shown in the following plot:</p>
+    <div class="main-plot-container l-page-outset">
+        <figure>
+            <img src="assets/images/synth_data_contamination.png">
+        </figure>
+        <div id="plot-synth_data_contamination"></div>
+    </div>
+    <p>While the frequency remained approximately constant until
+        2023-14 (ChatGPT was released at the end of 2022), we find a steep increase of our proxy metric
+        in recent crawls. While this simple test is not enough to conclude that ChatGPT completions and other synthetic data is improving the quality of the most recent crawl, it at the very least does not seem to drastically harm it.</p>
+    <p>We expect to continue seeing increasing quantities of synthetic data on new CC crawls. However, while for relatively small trainings this data does not seem to harm performance (and might actually improve it), it is not clear that this holds for much larger trainings.</p>
+
+    <h2>Conclusion and looking forward</h2>
+    <p>Through our open science efforts we hope to keep shining a light on the black box that is the training of high performance large language models as well as to give every model trainer the ability to create state-of-the-art LLMs. We are excited to continue iterating on FineWeb and to release increasingly better filtered subsets of web data, in a fully open and reproducible manner.</p>
+    <p>In the short term, we are looking forward to applying the learnings from (English) FineWeb to other languages. While English currently dominates the LLM landscape, we believe that making high quality web data in other languages as accessible as possible would be incredibly impactful.</p>
+    <p>In a nutshell: the future is bright and exciting for studying the science of creating datasets at scale and in the open 🤗.</p>
+</d-article>
+
+<d-appendix>
+    <d-bibliography src="bibliography.bib"></d-bibliography>
+    <style>
+      d-appendix .citation {
+        font-size: 11px;
+        line-height: 15px;
+        border-left: 1px solid rgba(0, 0, 0, 0.1);
+        padding-left: 18px;
+        border: 1px solid rgba(0,0,0,0.1);
+        background: rgba(0, 0, 0, 0.02);
+        padding: 10px 18px;
+        border-radius: 3px;
+        color: rgba(150, 150, 150, 1);
+        overflow: hidden;
+        margin-top: -12px;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+      }
+    </style>
+
+    <h3 id="citation">引用</h3>
+    <p>学术场景中请按以下格式引用本作品：</p>
+    <pre class="citation short">Penedo, et al., "The FineWeb Datasets: Decanting the Web for the Finest Text Data at Scale", 2024.</pre>
+    <p>BibTeX 引用</p>
+    <pre class="citation long">@misc{penedo2024finewebdatasetsdecantingweb,
+      title={The FineWeb Datasets: Decanting the Web for the Finest Text Data at Scale},
+      author={Guilherme Penedo and Hynek Kydlíček and Loubna Ben allal and Anton Lozhkov and Margaret Mitchell and Colin Raffel and Leandro Von Werra and Thomas Wolf},
+      year={2024},
+      eprint={2406.17557},
+      archivePrefix={arXiv},
+      primaryClass={cs.CL}
+      url={https://arxiv.org/abs/2406.17557},
+}</pre>
+</d-appendix>
+
+<script>
+    const article = document.querySelector('d-article');
+    const toc = document.querySelector('d-contents');
+    if (toc) {
+        const headings = article.querySelectorAll('h2, h3, h4');
+        let ToC = `<nav role="navigation" class="l-text figcaption"><h3>目录</h3>`;
+        let prevLevel = 0;
+
+        for (const el of headings) {
+            // should element be included in TOC?
+            const isInTitle = el.parentElement.tagName == 'D-TITLE';
+            const isException = el.getAttribute('no-toc');
+            if (isInTitle || isException) continue;
+            el.setAttribute('id', el.textContent.toLowerCase().replaceAll(" ", "_"))
+            const link = '<a target="_self" href="' + '#' + el.getAttribute('id') + '">' + el.textContent + '</a>';
+
+            const level = el.tagName === 'H2' ? 0 : (el.tagName === 'H3' ? 1 : 2);
+            while (prevLevel < level) {
+                ToC += '<ul>'
+                prevLevel++;
+            }
+            while (prevLevel > level) {
+                ToC += '</ul>'
+                prevLevel--;
+            }
+            if (level === 0)
+                ToC += '<div>' + link + '</div>';
+            else
+                ToC += '<li>' + link + '</li>';
+        }
+
+        while (prevLevel > 0) {
+            ToC += '</ul>'
+            prevLevel--;
+        }
+        ToC += '</nav>';
+        toc.innerHTML = ToC;
+        toc.setAttribute('prerendered', 'true');
+        const toc_links = document.querySelectorAll('d-contents > nav a');
+
+        window.addEventListener('scroll', (_event) => {
+            if (typeof (headings) != 'undefined' && headings != null && typeof (toc_links) != 'undefined' && toc_links != null) {
+                // Then iterate forwards, on the first match highlight it and break
+                find_active: {
+                    for (let i = headings.length - 1; i >= 0; i--) {
+                        if (headings[i].getBoundingClientRect().top - 50 <= 0) {
+                            if (!toc_links[i].classList.contains("active")) {
+                                toc_links.forEach((link, _index) => {
+                                    link.classList.remove("active");
+                                });
+                                toc_links[i].classList.add('active');
+                            }
+                            break find_active;
+                        }
+                    }
+                    toc_links.forEach((link, _index) => {
+                        link.classList.remove("active");
+                    });
+                }
+            }
+        });
+    }
+</script>
+</body>
+</html>
